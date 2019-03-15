@@ -877,10 +877,6 @@ class NuScenesExplorer:
 
         time_step = 1 / freq * 1e6  # Time-stamps are measured in micro-seconds.
 
-        window_name = '{}'.format(scene_rec['name'])
-        cv2.namedWindow(window_name)
-        cv2.moveWindow(window_name, 0, 0)
-
         canvas = np.ones((2 * imsize[1], 3 * imsize[0], 3), np.uint8)
         if out_path is not None:
             fourcc = cv2.VideoWriter_fourcc(*'MJPG')
@@ -935,7 +931,6 @@ class NuScenesExplorer:
                     prev_recs[channel] = sd_rec  # Store here so we don't render the same image twice.
 
             # Show updated canvas.
-            cv2.imshow(window_name, canvas)
             if out_path is not None:
                 out.write(canvas)
 
