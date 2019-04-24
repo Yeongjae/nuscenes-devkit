@@ -17,9 +17,10 @@ from PIL import Image
 from matplotlib.axes import Axes
 from pyquaternion import Quaternion
 from tqdm import tqdm
+from functools import reduce
 
 from nuscenes.utils.data_classes import LidarPointCloud, RadarPointCloud, Box
-from nuscenes.utils.geometry_utils import view_points, box_in_image, BoxVisibility
+from nuscenes.utils.geometry_utils import view_points, box_in_image, BoxVisibility, transform_matrix
 from nuscenes.utils.map_mask import MapMask
 
 PYTHON_VERSION = sys.version_info[0]
@@ -366,6 +367,62 @@ class NuScenes:
         else:
             return pos_diff / time_diff
 
+    # by yj.star
+    def get_pointcloud_is_on_mask(self, sample_data_token: str, nsweeps: int = 1, dilation: float = 0, ref_chan: str = 'LIDAR_TOP')  -> np.ndarray:
+        """
+        Determine whether the given point cloud (Lidar/Radar)  sample data are on the (optionally dilated) map mask.
+        :param sample_data_token: Lidar/Radar sample_data token.
+        :param nsweeps: Number of sweeps to aggregated.
+        :param dilation: Optional dilation of map mask.
+        :param ref_chan: reference channel.
+        :return: (pc, is_on_mask). The aggregated point cloud with is_on_mask and is_on_mask.        
+        """
+
+        # return
+        is_on_mask = None
+
+        # Get sensor modality.
+        sd_record = self.get('sample_data', sample_data_token)
+        sensor_modality = sd_record['sensor_modality']
+        sample_rec = self.get('sample', sd_record['sample_token'])
+
+        # get point_cloud
+        if sensor_modality == 'lidar':
+            chan = sd_record['channel']
+            pc, times = LidarPointCloud.from_file_multisweep(self, sample_rec, chan, ref_chan,
+                                                                    nsweeps=nsweeps)
+        elif sensor_modality == 'radar':
+            # The point cloud is transformed to the lidar frame for visualization purposes.
+            chan = sd_record['channel']
+            pc, times = RadarPointCloud.from_file_multisweep(self, sample_rec, chan, ref_chan, nsweeps=nsweeps)
+        else:
+            raise ValueError("Error: Unknown sensor modality!")
+
+        ## get coordinate transformation matrices
+        ref_sd_token = sample_rec['data'][ref_chan]
+        ref_sd_rec = self.get('sample_data', ref_sd_token)
+        ref_pose_rec = self.get('ego_pose', ref_sd_rec['ego_pose_token'])
+        ref_cs_rec = self.get('calibrated_sensor', ref_sd_rec['calibrated_sensor_token'])
+        global_from_car = transform_matrix(ref_pose_rec['translation'],
+                                           Quaternion(ref_pose_rec['rotation']), inverse=False)
+        car_from_current = transform_matrix(ref_cs_rec['translation'], Quaternion(ref_cs_rec['rotation']),
+                                            inverse=False)
+
+        ## Fuse two transformation matrices into one and perform transfrom.
+        trans_matrix = reduce(np.dot, [global_from_car, car_from_current])
+        pc.transform(trans_matrix)
+
+        ## Get map_mask
+        scene_record = self.get('scene', sample_rec['scene_token'])
+        log_record = self.get('log', scene_record['log_token'])
+        map_record = self.get('map', log_record['map_token'])
+        map_mask = map_record['mask']
+
+        ## Get is_on_mask
+        is_on_mask = map_mask.is_on_mask(x=pc.points[0, :], y=pc.points[1, :])
+
+        return is_on_mask
+
     def list_categories(self) -> None:
         self.explorer.list_categories()
 
@@ -389,9 +446,9 @@ class NuScenes:
 
     def render_sample_data(self, sample_data_token: str, with_anns: bool = True,
                            box_vis_level: BoxVisibility = BoxVisibility.ANY, axes_limit: float = 40, ax: Axes = None,
-                           nsweeps: int = 1, out_path: str = None) -> None:
+                           nsweeps: int = 1, out_path: str = None, vis_pc_with_map_mask: bool = True) -> None:
         self.explorer.render_sample_data(sample_data_token, with_anns, box_vis_level, axes_limit, ax, nsweeps=nsweeps,
-                                         out_path=out_path)
+                                         out_path=out_path, vis_pc_with_map_mask=vis_pc_with_map_mask)
 
     def render_annotation(self, sample_annotation_token: str, margin: float = 10, view: np.ndarray = np.eye(4),
                           box_vis_level: BoxVisibility = BoxVisibility.ANY, out_path: str = None) -> None:
@@ -651,7 +708,8 @@ class NuScenesExplorer:
                            axes_limit: float = 40,
                            ax: Axes = None,
                            nsweeps: int = 1,
-                           out_path: str = None) -> None:
+                           out_path: str = None,
+                           vis_pc_with_map_mask: bool = True) -> None:
         """
         Render sample data onto axis.
         :param sample_data_token: Sample_data token.
@@ -661,6 +719,7 @@ class NuScenesExplorer:
         :param ax: Axes onto which to render.
         :param nsweeps: Number of sweeps for lidar and radar.
         :param out_path: Optional path to save the rendered figure to disk.
+        :param vis_pc_with_map_mask: Visualization option, visualize that the (Lidar/radar) points are on the map mask or not.
         """
 
         # Get sensor modality.
@@ -684,7 +743,10 @@ class NuScenesExplorer:
             # Show point cloud.
             points = view_points(pc.points[:3, :], np.eye(4), normalize=False)
             dists = np.sqrt(np.sum(pc.points[:2, :] ** 2, axis=0))
-            colors = np.minimum(1, dists/axes_limit/np.sqrt(2))
+            colors = np.minimum(1, dists / axes_limit / np.sqrt(2))
+            if vis_pc_with_map_mask:
+                colors = self.nusc.get_pointcloud_is_on_mask(sample_data_token, nsweeps=nsweeps)
+
             ax.scatter(points[0, :], points[1, :], c=colors, s=0.2)
 
             # Show ego vehicle.
@@ -731,6 +793,8 @@ class NuScenesExplorer:
             points = view_points(pc.points[:3, :], np.eye(4), normalize=False)
             dists = np.sqrt(np.sum(pc.points[:2, :] ** 2, axis=0))
             colors = np.minimum(1, dists / axes_limit / np.sqrt(2))
+            if vis_pc_with_map_mask:
+                colors = self.nusc.get_pointcloud_is_on_mask(sample_data_token, nsweeps=nsweeps)
             sc = ax.scatter(points[0, :], points[1, :], c=colors, s=3)
 
             # Show velocities.
