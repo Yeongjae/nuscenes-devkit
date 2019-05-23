@@ -38,6 +38,12 @@ class DetectionConfig:
 
         self.class_names = self.class_range.keys()
 
+    def __eq__(self, other):
+        eq = True
+        for key in self.serialize().keys():
+            eq = eq and np.array_equal(getattr(self, key), getattr(other, key))
+        return eq
+
     def serialize(self) -> dict:
         """ Serialize instance into json-friendly format. """
         return {
@@ -80,32 +86,34 @@ class EvalBox:
                  num_pts: int = -1):  # Nbr. LIDAR or RADAR inside the box. Only for gt boxes.
 
         # Assert data for shape and NaNs.
-        assert type(sample_token) == str
+        assert type(sample_token) == str, 'Error: sample_token must be a string!'
 
-        assert len(translation) == 3
-        assert not np.any(np.isnan(translation))
+        assert len(translation) == 3, 'Error: Translation must have 3 elements!'
+        assert not np.any(np.isnan(translation)), 'Error: Translation may not be NaN!'
 
-        assert len(size) == 3
-        assert not np.any(np.isnan(size))
+        assert len(size) == 3, 'Error: Size must have 3 elements!'
+        assert not np.any(np.isnan(size)), 'Error: Size may not be NaN!'
 
-        assert len(rotation) == 4
-        assert not np.any(np.isnan(rotation))
+        assert len(rotation) == 4, 'Error: Rotation must have 4 elements!'
+        assert not np.any(np.isnan(rotation)), 'Error: Rotation may not be NaN!'
 
-        assert len(velocity) == 2  # Velocity can be NaN from our database for certain annotations.
+        # Velocity can be NaN from our database for certain annotations.
+        assert len(velocity) == 2, 'Error: Rotation must have 2 elements!'
 
-        assert detection_name in DETECTION_NAMES
+        assert detection_name is not None, 'Error: detection_name cannot be empty!'
+        assert detection_name in DETECTION_NAMES, 'Error: Unknown detection_name %s' % detection_name
 
-        assert attribute_name in ATTRIBUTE_NAMES or attribute_name == ''
+        assert attribute_name in ATTRIBUTE_NAMES or attribute_name == '', \
+            'Error: Unknown attribute_name %s' % attribute_name
 
-        assert type(ego_dist) == float
-        assert not np.any(np.isnan(ego_dist))
+        assert type(ego_dist) == float, 'Error: ego_dist must be a float!'
+        assert not np.any(np.isnan(ego_dist)), 'Error: ego_dist may not be NaN!'
 
-        assert type(detection_score) == float
-        assert not np.any(np.isnan(detection_score))
+        assert type(detection_score) == float, 'Error: detection_score must be a float!'
+        assert not np.any(np.isnan(detection_score)), 'Error: detection_score may not be NaN!'
 
-        assert type(num_pts) == int
-
-        assert not np.any(np.isnan(num_pts))
+        assert type(num_pts) == int, 'Error: num_pts must be int!'
+        assert not np.any(np.isnan(num_pts)), 'Error: num_pts may not be NaN!'
 
         # Assign.
         self.sample_token = sample_token
@@ -458,4 +466,34 @@ class DetectionMetrics:
                 'tp_errors': self.tp_errors,
                 'tp_scores': self.tp_scores,
                 'nd_score': self.nd_score,
-                'eval_time': self.eval_time}
+                'eval_time': self.eval_time,
+                'cfg': self.cfg.serialize()}
+
+    @classmethod
+    def deserialize(cls, content):
+        """ Initialize from serialized dictionary. """
+
+        cfg = DetectionConfig.deserialize(content['cfg'])
+
+        metrics = cls(cfg=cfg)
+        metrics.add_runtime(content['eval_time'])
+
+        for detection_name, label_aps in content['label_aps'].items():
+            for dist_th, ap in label_aps.items():
+                metrics.add_label_ap(detection_name=detection_name, dist_th=float(dist_th), ap=float(ap))
+
+        for detection_name, label_tps in content['label_tp_errors'].items():
+            for metric_name, tp in label_tps.items():
+                metrics.add_label_tp(detection_name=detection_name, metric_name=metric_name, tp=float(tp))
+
+        return metrics
+
+    def __eq__(self, other):
+
+        eq = True
+        eq = eq and self._label_aps == other._label_aps
+        eq = eq and self._label_tp_errors == other._label_tp_errors
+        eq = eq and self.eval_time == other.eval_time
+        eq = eq and self.cfg == other.cfg
+
+        return eq

@@ -58,7 +58,7 @@ class NuScenes:
 
         start_time = time.time()
         if verbose:
-            print("======\nLoading NuScenes tables for version {} ...".format(self.version))
+            print("======\nLoading NuScenes tables for version {}...".format(self.version))
 
         # Explicitly assign tables to help the IDE determine valid class members.
         self.category = self.__load_table__('category')
@@ -478,12 +478,15 @@ class NuScenesExplorer:
 
     @staticmethod
     def get_color(category_name: str) -> Tuple[int, int, int]:
-        """ Provides the default colors based on the category names. """
-        if category_name in ['vehicle.bicycle', 'vehicle.motorcycle']:
+        """
+        Provides the default colors based on the category names.
+        This method works for the general nuScenes categories, as well as the nuScenes detection categories.
+        """
+        if 'bicycle' in category_name or 'motorcycle' in category_name:
             return 255, 61, 99  # Red
-        elif 'vehicle' in category_name:
+        elif 'vehicle' in category_name or category_name in ['bus', 'car', 'construction_vehicle', 'trailer', 'truck']:
             return 255, 158, 0  # Orange
-        elif 'human.pedestrian' in category_name:
+        elif 'pedestrian' in category_name:
             return 0, 0, 230  # Blue
         elif 'cone' in category_name or 'barrier' in category_name:
             return 0, 0, 0  # Black
@@ -545,6 +548,8 @@ class NuScenesExplorer:
             desc = record['name'] + ', ' + record['description']
             if len(desc) > 55:
                 desc = desc[:51] + "..."
+            if len(location) > 18:
+                location = location[:18]
 
             print('{:16} [{}] {:4.0f}s, {}, #anns:{}'.format(
                 desc, datetime.utcfromtimestamp(start_time).strftime('%y-%m-%d %H:%M:%S'),
@@ -607,8 +612,8 @@ class NuScenesExplorer:
         # Grab the depths (camera frame z axis points away from the camera).
         depths = pc.points[2, :]
 
-        # Set the height to be the coloring.
-        coloring = pc.points[2, :]
+        # Retrieve the color from the depth.
+        coloring = depths
 
         # Take the actual picture (matrix multiplication with camera-matrix + renormalization).
         points = view_points(pc.points[:3, :], np.array(cs_record['camera_intrinsic']), normalize=True)

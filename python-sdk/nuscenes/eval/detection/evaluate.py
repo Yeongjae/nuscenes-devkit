@@ -13,11 +13,11 @@ import numpy as np
 
 from nuscenes import NuScenes
 from nuscenes.eval.detection.algo import accumulate, calc_ap, calc_tp
-from nuscenes.eval.detection.config import config_factory
 from nuscenes.eval.detection.constants import TP_METRICS
 from nuscenes.eval.detection.data_classes import DetectionConfig, MetricDataList, DetectionMetrics, EvalBoxes
 from nuscenes.eval.detection.loaders import load_prediction, load_gt, add_center_dist, filter_eval_boxes
 from nuscenes.eval.detection.render import summary_plot, class_pr_curve, class_tp_curve, dist_pr_curve, visualize_sample
+from nuscenes.eval.detection.config import config_factory
 
 
 class NuScenesEval:
@@ -63,6 +63,9 @@ class NuScenesEval:
         self.verbose = verbose
         self.cfg = config
 
+        # Check result file exists.
+        assert os.path.exists(result_path), 'Error: The result file does not exist!'
+
         # Make dirs.
         self.plot_dir = os.path.join(self.output_dir, 'plots')
         if not os.path.isdir(self.output_dir):
@@ -71,6 +74,8 @@ class NuScenesEval:
             os.makedirs(self.plot_dir)
 
         # Load data.
+        if verbose:
+            print('Initializing nuScenes evaluation')
         self.pred_boxes, self.meta = load_prediction(self.result_path, self.cfg.max_boxes_per_sample, verbose=verbose)
         self.gt_boxes = load_gt(self.nusc, self.eval_set, verbose=verbose)
 
@@ -142,6 +147,9 @@ class NuScenesEval:
         :param metrics: DetectionMetrics instance.
         :param md_list: MetricDataList instance.
         """
+
+        if self.verbose:
+            print('Rendering PR and TP curves')
 
         def savepath(name):
             return os.path.join(self.plot_dir, name + '.pdf')
@@ -221,6 +229,21 @@ class NuScenesEval:
         print('NDS: %.4f' % (metrics_summary['nd_score']))
         print('Eval time: %.1fs' % metrics_summary['eval_time'])
 
+        # Print per-class metrics.
+        print()
+        print('Per-class results:')
+        print('Object Class\tAP\tATE\tASE\tAOE\tAVE\tAAE')
+        class_aps = metrics_summary['mean_dist_aps']
+        class_tps = metrics_summary['label_tp_errors']
+        for class_name in class_aps.keys():
+            print('%s\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f'
+                  % (class_name, class_aps[class_name],
+                     class_tps[class_name]['trans_err'],
+                     class_tps[class_name]['scale_err'],
+                     class_tps[class_name]['orient_err'],
+                     class_tps[class_name]['vel_err'],
+                     class_tps[class_name]['attr_err']))
+
         return metrics_summary
 
 
@@ -238,8 +261,9 @@ if __name__ == "__main__":
                         help='Default nuScenes data directory.')
     parser.add_argument('--version', type=str, default='v1.0-trainval',
                         help='Which version of the nuScenes dataset to evaluate on, e.g. v1.0-trainval.')
-    parser.add_argument('--config_name', type=str, default='cvpr_2019',
-                        help='Name of the configuration to use for evaluation, e.g. cvpr_2019.')
+    parser.add_argument('--config_path', type=str, default='',
+                        help='Path to the configuration file.'
+                             'If no path given, the CVPR 2019 configuration will be used.')
     parser.add_argument('--plot_examples', type=int, default=10,
                         help='How many example visualizations to write to disk.')
     parser.add_argument('--render_curves', type=int, default=1,
@@ -253,12 +277,17 @@ if __name__ == "__main__":
     eval_set_ = args.eval_set
     dataroot_ = args.dataroot
     version_ = args.version
-    config_name_ = args.config_name
+    config_path = args.config_path
     plot_examples_ = args.plot_examples
     render_curves_ = bool(args.render_curves)
     verbose_ = bool(args.verbose)
 
-    cfg_ = config_factory(config_name_)
+    if config_path == '':
+        cfg_ = config_factory('cvpr_2019')
+    else:
+        with open(config_path, 'r') as f:
+            cfg_ = DetectionConfig.deserialize(json.load(f))
+
     nusc_ = NuScenes(version=version_, verbose=verbose_, dataroot=dataroot_)
     nusc_eval = NuScenesEval(nusc_, config=cfg_, result_path=result_path_, eval_set=eval_set_,
                              output_dir=output_dir_, verbose=verbose_)
