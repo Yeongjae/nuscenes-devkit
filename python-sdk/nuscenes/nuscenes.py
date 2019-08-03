@@ -410,6 +410,7 @@ class NuScenes:
 
         ## Fuse two transformation matrices into one and perform transfrom.
         trans_matrix = reduce(np.dot, [global_from_car, car_from_current])
+        pc.points[3,:]=1
         pc.transform(trans_matrix)
 
         ## Get map_mask
