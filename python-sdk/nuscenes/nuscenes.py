@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import sklearn.metrics
 from PIL import Image
+from matplotlib import rcParams
 from matplotlib.axes import Axes
 from pyquaternion import Quaternion
 from tqdm import tqdm
@@ -74,6 +75,10 @@ class NuScenes:
         self.sample_data = self.__load_table__('sample_data')
         self.sample_annotation = self.__load_table__('sample_annotation')
         self.map = self.__load_table__('map')
+
+        # If available, also load the image_annotations table created by export_2d_annotations_as_json().
+        if osp.exists(osp.join(self.table_root, 'image_annotations.json')):
+            self.image_annotations = self.__load_table__('image_annotations')
 
         # Initialize map mask for each map record.
         for map_record in self.map:
@@ -452,11 +457,14 @@ class NuScenes:
                                          out_path=out_path, vis_pc_with_map_mask=vis_pc_with_map_mask)
 
     def render_annotation(self, sample_annotation_token: str, margin: float = 10, view: np.ndarray = np.eye(4),
-                          box_vis_level: BoxVisibility = BoxVisibility.ANY, out_path: str = None) -> None:
-        self.explorer.render_annotation(sample_annotation_token, margin, view, box_vis_level, out_path)
+                          box_vis_level: BoxVisibility = BoxVisibility.ANY, out_path: str = None,
+                          extra_info: bool = False) -> None:
+        self.explorer.render_annotation(sample_annotation_token, margin, view, box_vis_level, out_path, extra_info)
 
-    def render_instance(self, instance_token: str, out_path: str = None) -> None:
-        self.explorer.render_instance(instance_token, out_path=out_path)
+    def render_instance(self, instance_token: str, margin: float = 10, view: np.ndarray = np.eye(4),
+                        box_vis_level: BoxVisibility = BoxVisibility.ANY, out_path: str = None,
+                        extra_info: bool = False) -> None:
+        self.explorer.render_instance(instance_token, margin, view, box_vis_level, out_path, extra_info)
 
     def render_scene(self, scene_token: str, freq: float = 10, imsize: Tuple[float, float] = (640, 360),
                      out_path: str = None) -> None:
@@ -570,12 +578,16 @@ class NuScenesExplorer:
             ann_record = self.nusc.get('sample_annotation', ann_token)
             print('sample_annotation_token: {}, category: {}'.format(ann_record['token'], ann_record['category_name']))
 
-    def map_pointcloud_to_image(self, pointsensor_token: str, camera_token: str) -> Tuple:
+    def map_pointcloud_to_image(self,
+                                pointsensor_token: str,
+                                camera_token: str,
+                                min_dist: float = 1.0) -> Tuple:
         """
         Given a point sensor (lidar/radar) token and camera sample_data token, load point-cloud and map it to the image
         plane.
         :param pointsensor_token: Lidar/radar sample_data token.
         :param camera_token: Camera sample_data token.
+        :param min_dist: Distance from the camera below which points are discarded.
         :return (pointcloud <np.float: 2, n)>, coloring <np.float: n>, image <Image>).
         """
 
@@ -620,8 +632,10 @@ class NuScenesExplorer:
         points = view_points(pc.points[:3, :], np.array(cs_record['camera_intrinsic']), normalize=True)
 
         # Remove points that are either outside or behind the camera. Leave a margin of 1 pixel for aesthetic reasons.
+        # Also make sure points are at least 1m in front of the camera to avoid seeing the lidar points on the camera
+        # casing for non-keyframes which are slightly out of sync.
         mask = np.ones(depths.shape[0], dtype=bool)
-        mask = np.logical_and(mask, depths > 0)
+        mask = np.logical_and(mask, depths > min_dist)
         mask = np.logical_and(mask, points[0, :] > 1)
         mask = np.logical_and(mask, points[0, :] < im.size[0] - 1)
         mask = np.logical_and(mask, points[1, :] > 1)
@@ -864,7 +878,8 @@ class NuScenesExplorer:
                           margin: float = 10,
                           view: np.ndarray = np.eye(4),
                           box_vis_level: BoxVisibility = BoxVisibility.ANY,
-                          out_path: str = None) -> None:
+                          out_path: str = None,
+                          extra_info: bool = False) -> None:
         """
         Render selected annotation.
         :param anntoken: Sample_annotation token.
@@ -872,8 +887,8 @@ class NuScenesExplorer:
         :param view: LIDAR view point.
         :param box_vis_level: If sample_data is an image, this sets required visibility for boxes.
         :param out_path: Optional path to save the rendered figure to disk.
+        :param extra_info: Whether to render extra information below camera view.
         """
-
         ann_record = self.nusc.get('sample_annotation', anntoken)
         sample_record = self.nusc.get('sample', ann_record['sample_token'])
         assert 'LIDAR_TOP' in sample_record['data'].keys(), 'No LIDAR_TOP in data, cant render'
@@ -917,14 +932,50 @@ class NuScenesExplorer:
             c = np.array(self.get_color(box.name)) / 255.0
             box.render(axes[1], view=camera_intrinsic, normalize=True, colors=(c, c, c))
 
+        # Print extra information about the annotation below the camera view.
+        if extra_info:
+            rcParams['font.family'] = 'monospace'
+
+            w, l, h = ann_record['size']
+            category = ann_record['category_name']
+            lidar_points = ann_record['num_lidar_pts']
+            radar_points = ann_record['num_radar_pts']
+
+            sample_data_record = self.nusc.get('sample_data', sample_record['data']['LIDAR_TOP'])
+            pose_record = self.nusc.get('ego_pose', sample_data_record['ego_pose_token'])
+            dist = np.linalg.norm(np.array(pose_record['translation']) - np.array(ann_record['translation']))
+
+            information = ' \n'.join(['category: {}'.format(category),
+                                      '',
+                                      '# lidar points: {0:>4}'.format(lidar_points),
+                                      '# radar points: {0:>4}'.format(radar_points),
+                                      '',
+                                      'distance: {:>7.3f}m'.format(dist),
+                                      '',
+                                      'width:  {:>7.3f}m'.format(w),
+                                      'length: {:>7.3f}m'.format(l),
+                                      'height: {:>7.3f}m'.format(h)])
+
+            plt.annotate(information, (0, 0), (0, -20), xycoords='axes fraction', textcoords='offset points', va='top')
+
         if out_path is not None:
             plt.savefig(out_path)
 
-    def render_instance(self, instance_token: str, out_path: str = None) -> None:
+    def render_instance(self,
+                        instance_token: str,
+                        margin: float = 10,
+                        view: np.ndarray = np.eye(4),
+                        box_vis_level: BoxVisibility = BoxVisibility.ANY,
+                        out_path: str = None,
+                        extra_info: bool = False) -> None:
         """
         Finds the annotation of the given instance that is closest to the vehicle, and then renders it.
         :param instance_token: The instance token.
+        :param margin: How many meters in each direction to include in LIDAR view.
+        :param view: LIDAR view point.
+        :param box_vis_level: If sample_data is an image, this sets required visibility for boxes.
         :param out_path: Optional path to save the rendered figure to disk.
+        :param extra_info: Whether to render extra information below camera view.
         """
         ann_tokens = self.nusc.field2token('sample_annotation', 'instance_token', instance_token)
         closest = [np.inf, None]
@@ -937,7 +988,8 @@ class NuScenesExplorer:
             if dist < closest[0]:
                 closest[0] = dist
                 closest[1] = ann_token
-        self.render_annotation(closest[1], out_path=out_path)
+
+        self.render_annotation(closest[1], margin, view, box_vis_level, out_path, extra_info)
 
     def render_scene(self,
                      scene_token: str,
@@ -1129,7 +1181,8 @@ class NuScenesExplorer:
         if out_path is not None:
             out.release()
 
-    def render_egoposes_on_map(self, log_location: str,
+    def render_egoposes_on_map(self,
+                               log_location: str,
                                scene_tokens: List = None,
                                close_dist: float = 100,
                                color_fg: Tuple[int, int, int] = (167, 174, 186),
