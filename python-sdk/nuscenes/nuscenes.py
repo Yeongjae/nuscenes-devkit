@@ -415,7 +415,6 @@ class NuScenes:
 
         ## Fuse two transformation matrices into one and perform transfrom.
         trans_matrix = reduce(np.dot, [global_from_car, car_from_current])
-        pc.points[3,:]=1
         pc.transform(trans_matrix)
 
         ## Get map_mask
@@ -763,9 +762,10 @@ class NuScenesExplorer:
             # Show point cloud.
             points = view_points(pc.points[:3, :], np.eye(4), normalize=False)
             dists = np.sqrt(np.sum(pc.points[:2, :] ** 2, axis=0))
-            colors = np.minimum(1, dists / axes_limit / np.sqrt(2))
+            colors = np.minimum(1, dists/axes_limit/np.sqrt(2))
             if vis_pc_with_map_mask:
-                colors = self.nusc.get_pointcloud_is_on_mask(sample_data_token, nsweeps=nsweeps)
+                is_on_mask = self.nusc.get_pointcloud_is_on_mask(sample_data_token, nsweeps=nsweeps)
+                colors += is_on_mask.astype('float')
 
             ax.scatter(points[0, :], points[1, :], c=colors, s=0.2)
 
@@ -814,7 +814,8 @@ class NuScenesExplorer:
             dists = np.sqrt(np.sum(pc.points[:2, :] ** 2, axis=0))
             colors = np.minimum(1, dists / axes_limit / np.sqrt(2))
             if vis_pc_with_map_mask:
-                colors = self.nusc.get_pointcloud_is_on_mask(sample_data_token, nsweeps=nsweeps)
+                is_on_mask = self.nusc.get_pointcloud_is_on_mask(sample_data_token, nsweeps=nsweeps)
+                colors += is_on_mask.astype('float')
             sc = ax.scatter(points[0, :], points[1, :], c=colors, s=3)
 
             # Show velocities.
